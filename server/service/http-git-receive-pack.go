@@ -217,15 +217,30 @@ func (cfg *Service) serveGitReceivePack(ctx context.Context, w http.ResponseWrit
 	cfg.statestore.AddFakeRefs(reponame, toupdate)
 	defer cfg.statestore.RemoveFakeRefs(reponame, toupdate)
 
-	cfg.debugPacket(ctx, rw, "Running pre-receive hook...")
-	err = cfg.runHook(
-		hookTypePreReceive,
+	cfg.debugPacket(ctx, rw, "Preparing hook running...")
+	hookrun, err := cfg.prepareHookRunning(
 		errsender,
 		infosender,
 		reponame,
 		toupdate,
 		hookExtras,
 	)
+	if err != nil {
+		reqlogger.WithError(err).Info("Hook preparing failed")
+		sendSideBandPacket(ctx, w, sideBandProgress, []byte("ERR Hook preparing failed"))
+		sendUnpackFail(ctx, w, toupdate, "Hook preparing failed")
+		return
+	}
+	if hookrun == nil {
+		reqlogger.Info("Hook preparing failed, unknown reason")
+		sendSideBandPacket(ctx, w, sideBandProgress, []byte("ERR Hook preparing failed"))
+		sendUnpackFail(ctx, w, toupdate, "Hook preparing failed")
+		return
+	}
+	defer hookrun.close()
+
+	cfg.debugPacket(ctx, rw, "Running pre-receive hook...")
+	err = hookrun.runHook(hookTypePreReceive)
 	if err != nil {
 		reqlogger.WithError(err).Debug("Pre-receive hook refused push")
 		sendSideBandPacket(ctx, w, sideBandProgress, []byte("ERR Pre-receive hook refused push\n"))
@@ -235,14 +250,7 @@ func (cfg *Service) serveGitReceivePack(ctx context.Context, w http.ResponseWrit
 	cfg.debugPacket(ctx, rw, "Pre-receive hook done")
 
 	cfg.debugPacket(ctx, rw, "Running update hook...")
-	err = cfg.runHook(
-		hookTypeUpdate,
-		errsender,
-		infosender,
-		reponame,
-		toupdate,
-		hookExtras,
-	)
+	err = hookrun.runHook(hookTypeUpdate)
 	if err != nil {
 		reqlogger.WithError(err).Debug("Update hook refused push")
 		sendSideBandPacket(ctx, w, sideBandProgress, []byte("ERR Update hook refused push\n"))
@@ -286,14 +294,7 @@ func (cfg *Service) serveGitReceivePack(ctx context.Context, w http.ResponseWrit
 	}
 
 	cfg.debugPacket(ctx, rw, "Running post-receive hook...")
-	err = cfg.runHook(
-		hookTypePostReceive,
-		errsender,
-		infosender,
-		reponame,
-		toupdate,
-		hookExtras,
-	)
+	err = hookrun.runHook(hookTypePostReceive)
 	if err != nil {
 		reqlogger.WithError(err).Debug("Post-receive hook failed")
 	}

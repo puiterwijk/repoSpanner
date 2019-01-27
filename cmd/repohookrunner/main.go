@@ -186,7 +186,7 @@ func getHookArgs(request datastructures.HookRunRequest, branch string, req [2]st
 	}
 }
 
-func runHook(request datastructures.HookRunRequest, workdir string, branch string, req [2]string) {
+func runHook(request datastructures.HookRunRequest, hook string, workdir string, branch string, req [2]string) {
 	hookArgs, hookbuf := getHookArgs(request, branch, req)
 	usebwrap, bwrapcmd := getBwrapConfig(request.BwrapConfig)
 
@@ -197,7 +197,7 @@ func runHook(request datastructures.HookRunRequest, workdir string, branch strin
 			"--bind", path.Join(workdir, "hookrun"), "/hookrun",
 			"--chdir", "/hookrun/clone",
 			"--setenv", "GIT_DIR", "/hookrun/clone",
-			"--setenv", "HOOKTYPE", request.Hook,
+			"--setenv", "HOOKTYPE", hook,
 		)
 
 		for key, val := range request.ExtraEnv {
@@ -209,7 +209,7 @@ func runHook(request datastructures.HookRunRequest, workdir string, branch strin
 
 		bwrapcmd = append(
 			bwrapcmd,
-			path.Join("/hookrun", request.Hook),
+			path.Join("/hookrun", hook),
 		)
 		bwrapcmd = append(
 			bwrapcmd,
@@ -221,7 +221,7 @@ func runHook(request datastructures.HookRunRequest, workdir string, branch strin
 		)
 	} else {
 		cmd = exec.Command(
-			path.Join(workdir, "hookrun", request.Hook),
+			path.Join(workdir, "hookrun", hook),
 			hookArgs...,
 		)
 		cmd.Dir = path.Join(workdir, "hookrun", "clone")
@@ -277,26 +277,28 @@ func getScript(request datastructures.HookRunRequest, workdir string) {
 		Transport: transport,
 	}
 
-	// Grab the hook script itself
-	script, err := os.Create(path.Join(workdir, "hookrun", request.Hook))
-	failIfError(err, "Error opening script file")
-	resp, err := clnt.Get(
-		request.RPCURL + "/rpc/object/single/admin/hooks.git/" + request.HookObject,
-	)
-	failIfError(err, "Error retrieving hook script")
-	if resp.StatusCode != 200 {
-		fmt.Fprintln(os.Stderr, "Unable to retrieve hook script")
-		panic("Error")
+	// Grab the hook scripts
+	for hook, object := range request.HookObjects {
+		script, err := os.Create(path.Join(workdir, "hookrun", hook))
+		failIfError(err, "Error opening script file")
+		resp, err := clnt.Get(
+			request.RPCURL + "/rpc/object/single/admin/hooks.git/" + object,
+		)
+		failIfError(err, "Error retrieving hook script")
+		if resp.StatusCode != 200 {
+			fmt.Fprintln(os.Stderr, "Unable to retrieve hook script")
+			panic("Error")
+		}
+
+		_, err = io.Copy(script, resp.Body)
+		resp.Body.Close()
+		failIfError(err, "Error writing script file")
+		err = script.Close()
+		failIfError(err, "Error flushing script file")
+
+		err = os.Chmod(script.Name(), 0755)
+		failIfError(err, "Error changing script permissions")
 	}
-
-	_, err = io.Copy(script, resp.Body)
-	resp.Body.Close()
-	failIfError(err, "Error writing script file")
-	err = script.Close()
-	failIfError(err, "Error flushing script file")
-
-	err = os.Chmod(script.Name(), 0755)
-	failIfError(err, "Error changing script permissions")
 }
 
 func bwrapGetBool(bwrap map[string]interface{}, opt string, required bool) bool {
