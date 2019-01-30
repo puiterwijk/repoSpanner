@@ -77,6 +77,30 @@ func (cfg *Service) serveGitReceivePack(ctx context.Context, w http.ResponseWrit
 		return
 	}
 
+	// Prepare hook runners
+	cfg.debugPacket(ctx, rw, "Preparing hook running...")
+	hookrun, err := cfg.prepareHookRunning(
+		errsender,
+		infosender,
+		reponame,
+		toupdate,
+		hookExtras,
+	)
+	if err != nil {
+		reqlogger.WithError(err).Info("Hook preparing failed")
+		sendSideBandPacket(ctx, w, sideBandProgress, []byte("ERR Hook preparing failed"))
+		sendUnpackFail(ctx, w, toupdate, "Hook preparing failed")
+		return
+	}
+	if hookrun == nil {
+		reqlogger.Info("Hook preparing failed, unknown reason")
+		sendSideBandPacket(ctx, w, sideBandProgress, []byte("ERR Hook preparing failed"))
+		sendUnpackFail(ctx, w, toupdate, "Hook preparing failed")
+		return
+	}
+	defer hookrun.close()
+
+	// Now get and store objects
 	pusher := projectstore.GetPusher(toupdate.UUID())
 	ctx, cancel := context.WithCancel(ctx)
 	pushresultc := pusher.GetPushResultChannel()
@@ -217,27 +241,14 @@ func (cfg *Service) serveGitReceivePack(ctx context.Context, w http.ResponseWrit
 	cfg.statestore.AddFakeRefs(reponame, toupdate)
 	defer cfg.statestore.RemoveFakeRefs(reponame, toupdate)
 
-	cfg.debugPacket(ctx, rw, "Preparing hook running...")
-	hookrun, err := cfg.prepareHookRunning(
-		errsender,
-		infosender,
-		reponame,
-		toupdate,
-		hookExtras,
-	)
+	cfg.debugPacket(ctx, rw, "Telling hook runner to grab new contents...")
+	err = hookrun.fetchFakeRefs()
 	if err != nil {
-		reqlogger.WithError(err).Info("Hook preparing failed")
-		sendSideBandPacket(ctx, w, sideBandProgress, []byte("ERR Hook preparing failed"))
-		sendUnpackFail(ctx, w, toupdate, "Hook preparing failed")
+		reqlogger.WithError(err).Info("Hook fetchin failed")
+		sendSideBandPacket(ctx, w, sideBandProgress, []byte("ERR Hook fetching failed"))
+		sendUnpackFail(ctx, w, toupdate, "Hook fetching failed")
 		return
 	}
-	if hookrun == nil {
-		reqlogger.Info("Hook preparing failed, unknown reason")
-		sendSideBandPacket(ctx, w, sideBandProgress, []byte("ERR Hook preparing failed"))
-		sendUnpackFail(ctx, w, toupdate, "Hook preparing failed")
-		return
-	}
-	defer hookrun.close()
 
 	cfg.debugPacket(ctx, rw, "Running pre-receive hook...")
 	err = hookrun.runHook(hookTypePreReceive)

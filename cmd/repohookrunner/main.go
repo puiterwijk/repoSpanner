@@ -21,7 +21,12 @@ import (
 	"repospanner.org/repospanner/server/storage"
 )
 
-var debug bool
+var (
+	debug       bool
+	keysDeleted bool
+	lastcommand string
+	ackchan     chan<- string
+)
 
 func failIfError(err error, msg string) {
 	if err != nil {
@@ -34,17 +39,13 @@ func failIfError(err error, msg string) {
 
 func failNow(msg string) {
 	fmt.Fprintln(os.Stderr, msg)
+	if ackchan != nil {
+		acknowledgeCommand()
+	}
 	panic("Erroring")
 }
 
-func main() {
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Fprintln(os.Stderr, "Error occured")
-			os.Exit(1)
-		}
-	}()
-
+func getRequest() datastructures.HookRunRequest {
 	if !constants.VersionBuiltIn() {
 		fmt.Fprintf(os.Stderr, "Invalid build")
 		os.Exit(1)
@@ -60,19 +61,12 @@ func main() {
 	var request datastructures.HookRunRequest
 	err = json.Unmarshal(breq, &request)
 	failIfError(err, "Error parsing request")
+
 	debug = request.Debug
+	return request
+}
 
-	if debug {
-		fmt.Println("repoSpanner Hook Runner " + constants.PublicVersionString())
-	}
-
-	// Before doing anything else, lower privileges
-	if request.User != 0 {
-		err = dropToUser(request.User)
-		failIfError(err, "Error dropping privileges")
-	}
-
-	// At this moment, we have lowered privileges. Clone the repo
+func cloneRepository(request datastructures.HookRunRequest) string {
 	workdir, err := ioutil.TempDir("", "repospanner_hook_runner_")
 	failIfError(err, "Error creating runner work directory")
 	defer os.RemoveAll(workdir)
@@ -124,6 +118,11 @@ func main() {
 		failIfError(err, "Error removing hookfile")
 	}
 
+	return workdir
+}
+
+func fetchFakeRefs(request datastructures.HookRunRequest, workdir string) {
+	// At this point, we have started preparations.
 	tos := make([]string, 0)
 
 	for refname, req := range request.Requests {
@@ -134,49 +133,184 @@ func main() {
 		tos = append(tos, fmt.Sprintf("refs/heads/fake/%s/%s", request.PushUUID, refname))
 	}
 
-	if len(tos) > 0 {
-		cmdstr := []string{
-			"fetch",
-			"origin",
-		}
-		cmdstr = append(cmdstr, tos...)
-		cmd := exec.Command(
-			"git",
-			cmdstr...,
-		)
-		cmd.Dir = path.Join(workdir, "hookrun", "clone")
-		if debug {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-		}
-		err = cmd.Run()
-		failIfError(err, "Error grabbing the To objects")
+	if len(tos) == 0 {
+		return
 	}
-	getScript(request, workdir)
 
+	cmdstr := []string{
+		"fetch",
+		"origin",
+	}
+	cmdstr = append(cmdstr, tos...)
+	cmd := exec.Command(
+		"git",
+		cmdstr...,
+	)
+	cmd.Dir = path.Join(workdir, "hookrun", "clone")
+	if debug {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
+	err := cmd.Run()
+	failIfError(err, "Error grabbing the To objects")
+}
+
+func deleteKeys(request *datastructures.HookRunRequest, workdir string) {
 	// We are done cloning, let's remove the keys from file system and memory
 	// This is under the phrasing "What's not there, can't be stolen"
-	err = os.RemoveAll(path.Join(workdir, "keys"))
+	err := os.RemoveAll(path.Join(workdir, "keys"))
 	failIfError(err, "Error removing keys")
 	request.ClientCert = ""
 	request.ClientKey = ""
 	request.ClientCaCert = ""
 
-	// We have now downloaded the repo and script, and removed our keys.
-	// Let's actually get to running this hook!
-	// But first.... a message from our sponsors!
-	if request.Hook == "update" {
-		for branch, req := range request.Requests {
-			runHook(request, workdir, branch, req)
-		}
-	} else {
-		runHook(request, workdir, "", [2]string{"", ""})
+	keysDeleted = true
+}
+
+func assertKeysDeleted() {
+	if !keysDeleted {
+		failNow("Keys not deleted prior to hook run")
 	}
 }
 
-func getHookArgs(request datastructures.HookRunRequest, branch string, req [2]string) ([]string, io.Reader) {
+func main() {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintln(os.Stderr, "Error occured")
+			os.Exit(1)
+		}
+	}()
+
+	request := getRequest()
+
+	if debug {
+		fmt.Println("repoSpanner Hook Runner " + constants.PublicVersionString())
+	}
+
+	// Before doing anything else, lower privileges
+	if request.User != 0 {
+		err := dropToUser(request.User)
+		failIfError(err, "Error dropping privileges")
+	}
+
+	// At this moment, we have lowered privileges. Clone the repo
+	workdir := cloneRepository(request)
+
+	// Get the hook scripts
+	getScripts(request, workdir)
+
+	// Get the "control" file.
+	control := os.NewFile(3, "control")
+	if control == nil {
+		failNow("No control file passed?")
+		return
+	}
+	cmdchan := runControlChannel(control)
+
+	// At this moment, we have finished all preparations we can so far.
+	// Now wait for commands.
+	processCommands(&request, workdir, cmdchan)
+}
+
+func runControlChannel(controlfile *os.File) <-chan string {
+	cmdchan := make(chan string)
+	sendackchan := make(chan string)
+	ackchan = sendackchan
+
+	// Goroutine to read commands from controlfile and put to cmdchan
+	go func() {
+		buffer := make([]byte, 1024)
+		read := 0
+		for {
+			n, err := controlfile.Read(buffer[read:])
+			failIfError(err, "Error reading control file")
+			read += n
+
+		checkforcommand:
+			for i := 0; i < read; i++ {
+				// Try to find a newline deliniating a full command
+				if buffer[i] == '\n' {
+					// Full command received, send
+					cmdchan <- string(buffer[0:i])
+
+					// Move everything after back forward for the next run
+					copy(buffer[0:], buffer[i+1:read])
+					read -= (i + 1)
+
+					continue checkforcommand
+				}
+			}
+		}
+	}()
+
+	// Goroutine to read acks from ackchan and put to controlfile
+	go func() {
+		for ack := range sendackchan {
+			n, err := controlfile.WriteString(ack + "\n")
+			failIfError(err, "Error writing reply to control file")
+			if n != len(ack)+1 {
+				failNow("Not full acknowledgment written")
+			}
+		}
+	}()
+
+	return cmdchan
+}
+
+func acknowledgeCommand(resp constants.Command) {
+	ackchan <- fmt.Sprintf("%s %s\n", resp, lastcommand)
+}
+
+func processCommands(request *datastructures.HookRunRequest, workdir string, cmdchan <-chan string) {
+	for cmd := range cmdchan {
+		if cmd == "" {
+			failNow("Empty command received by hook runner?")
+		}
+
+		cmdparts := strings.Split(cmd, " ")
+		lastcommand := cmdparts[0]
+		command := constants.Command(cmdparts[1])
+		var args []string
+		if len(cmdparts) > 2 {
+			args = cmdparts[2:]
+		}
+
+		switch command {
+		case constants.CmdFetch:
+			fetchFakeRefs(*request, workdir)
+			deleteKeys(request, workdir)
+			acknowledgeCommand(constants.CmdRespOK, chal, ackchan)
+			continue
+
+		case constants.CmdRun:
+			hookname := args[0]
+
+			if hookname == "update" {
+				for branch, req := range request.Requests {
+					runHook(*request, workdir, hookname, branch, req)
+				}
+			} else {
+				runHook(*request, workdir, hookname, "", [2]string{"", ""})
+			}
+
+			acknowledgeCommand(chal, ackchan)
+
+			continue
+
+		case constants.CmdQuit:
+			acknowledgeCommand(chal, ackchan)
+			close(ackchan)
+			return
+
+		}
+
+		failNow("Invalid command received: " + cmd)
+	}
+}
+
+func getHookArgs(request datastructures.HookRunRequest, hookname, branch string, req [2]string) ([]string, io.Reader) {
 	buf := bytes.NewBuffer(nil)
-	if request.Hook == "update" {
+	if hookname == "update" {
 		return []string{branch, req[0], req[1]}, buf
 	} else {
 		for branch, req := range request.Requests {
@@ -186,8 +320,10 @@ func getHookArgs(request datastructures.HookRunRequest, branch string, req [2]st
 	}
 }
 
-func runHook(request datastructures.HookRunRequest, hook string, workdir string, branch string, req [2]string) {
-	hookArgs, hookbuf := getHookArgs(request, branch, req)
+func runHook(request datastructures.HookRunRequest, workdir, hookname string, branch string, req [2]string) {
+	assertKeysDeleted()
+
+	hookArgs, hookbuf := getHookArgs(request, hookname, branch, req)
 	usebwrap, bwrapcmd := getBwrapConfig(request.BwrapConfig)
 
 	var cmd *exec.Cmd
@@ -197,7 +333,7 @@ func runHook(request datastructures.HookRunRequest, hook string, workdir string,
 			"--bind", path.Join(workdir, "hookrun"), "/hookrun",
 			"--chdir", "/hookrun/clone",
 			"--setenv", "GIT_DIR", "/hookrun/clone",
-			"--setenv", "HOOKTYPE", hook,
+			"--setenv", "HOOKTYPE", hookname,
 		)
 
 		for key, val := range request.ExtraEnv {
@@ -209,7 +345,7 @@ func runHook(request datastructures.HookRunRequest, hook string, workdir string,
 
 		bwrapcmd = append(
 			bwrapcmd,
-			path.Join("/hookrun", hook),
+			path.Join("/hookrun", hookname),
 		)
 		bwrapcmd = append(
 			bwrapcmd,
@@ -221,7 +357,7 @@ func runHook(request datastructures.HookRunRequest, hook string, workdir string,
 		)
 	} else {
 		cmd = exec.Command(
-			path.Join(workdir, "hookrun", hook),
+			path.Join(workdir, "hookrun", hookname),
 			hookArgs...,
 		)
 		cmd.Dir = path.Join(workdir, "hookrun", "clone")
@@ -253,7 +389,7 @@ func runHook(request datastructures.HookRunRequest, hook string, workdir string,
 	failIfError(err, "Error running hook")
 }
 
-func getScript(request datastructures.HookRunRequest, workdir string) {
+func getScripts(request datastructures.HookRunRequest, workdir string) {
 	cert, err := tls.LoadX509KeyPair(
 		path.Join(workdir, "keys", "client.crt"),
 		path.Join(workdir, "keys", "client.key"),
