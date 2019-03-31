@@ -210,6 +210,9 @@ func (t *treeStorageProjectDriverInstance) GetPusher(_ string) ProjectStoragePus
 	}
 }
 
+func (t *treeStorageProjectPushDriverInstance) Close() {
+}
+
 func (t *treeStorageProjectPushDriverInstance) Done() {
 	close(t.c)
 }

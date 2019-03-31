@@ -652,6 +652,9 @@ func (d *clusterStorageProjectPushDriverInstance) GetPushResultChannel() <-chan 
 	return d.errchan
 }
 
+func (d *clusterStorageProjectPushDriverInstance) Close() {
+}
+
 func (d *clusterStorageProjectPushDriverInstance) Done() {
 	go func() {
 		d.d.d.cfg.log.Debug("Marking pusher as done")

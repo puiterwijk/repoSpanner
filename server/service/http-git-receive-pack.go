@@ -161,6 +161,7 @@ func (cfg *Service) performReceivePack(ctx context.Context, hdrs http.Header, re
 
 	// Now get and store objects
 	pusher := projectstore.GetPusher(toupdate.UUID())
+	defer pusher.Close()
 	pushresultc := pusher.GetPushResultChannel()
 
 	if toupdate.ExpectPackFile() {

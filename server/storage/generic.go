@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"strings"
 )
 
 type Object []byte
@@ -97,7 +98,10 @@ type ProjectStorageObjectLister interface {
 type ProjectStoragePushDriver interface {
 	StageObject(objtype ObjectType, objsize uint) (StagedObject, error)
 	GetPushResultChannel() <-chan error
+	// Done is called to mark the entire push a success, and save the objects
 	Done()
+	// Close is called at the end of the push. If Done() hasn't been called before, it might remove the staged objects.
+	Close()
 }
 
 type StagedObject interface {
@@ -128,6 +132,13 @@ func InitializeStorageDriver(config map[string]string) (StorageDriver, error) {
 			compressmethod = "none"
 		}
 		return newTreeStoreDriver(dirname, compressmethod)
+	case "pack":
+		dirname, ok := config["directory"]
+		if !ok {
+			return nil, errors.New("No directory provided")
+		}
+		crossproject := strings.ToLower(config["crossproject"]) != "false"
+		return newPackStoreDriver(dirname, crossproject)
 	default:
 		return nil, errors.New("Unknown storage driver " + storagetype)
 	}

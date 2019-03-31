@@ -269,7 +269,7 @@ func TestGzipCompressedTreeStorageDriver(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	//defer os.RemoveAll(dir)
+	defer os.RemoveAll(dir)
 	fmt.Println("Dir: ", dir)
 	t.Run("tree", func(t *testing.T) {
 		treeconf := map[string]string{}
@@ -322,5 +322,45 @@ func TestUncompressedTreeStorageDriver(t *testing.T) {
 			panic(err)
 		}
 		testStorageDriver("tree", instance, t)
+	})
+}
+
+func TestPackStorageDriver(t *testing.T) {
+	dir, err := ioutil.TempDir("", "repospanner_test_")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(dir)
+	t.Run("pack", func(t *testing.T) {
+		treeconf := map[string]string{}
+		treeconf["type"] = "pack"
+		treeconf["directory"] = dir
+		treeconf["clustered"] = "false"
+		treeconf["crossproject"] = "false"
+		instance, err := InitializeStorageDriver(treeconf)
+		if err != nil {
+			panic(err)
+		}
+		testStorageDriver("pack", instance, t)
+	})
+}
+
+func TestPackCrossProjectStorageDriver(t *testing.T) {
+	dir, err := ioutil.TempDir("", "repospanner_test_")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(dir)
+	t.Run("pack", func(t *testing.T) {
+		treeconf := map[string]string{}
+		treeconf["type"] = "pack"
+		treeconf["directory"] = dir
+		treeconf["clustered"] = "false"
+		treeconf["crossproject"] = "true"
+		instance, err := InitializeStorageDriver(treeconf)
+		if err != nil {
+			panic(err)
+		}
+		testStorageDriver("pack", instance, t)
 	})
 }
