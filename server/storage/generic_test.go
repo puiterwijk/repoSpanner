@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -262,6 +263,119 @@ func testStorageDriver(name string, instance StorageDriver, t *testing.T) {
 	// And check all object lists
 	expectObjects(t, p1, false, "30d74d258442c7c65512eafab474568dd706c430")
 	expectObjects(t, p2, false, "5c40945c981bd37a6912f5e2d3b2ceabfec5452a")
+
+	// And now make sure that if we push the same content to two projects, they stay separate
+	// So: pushing object A to project X with checksum S and object B to project Y with checksum S
+	//  should make calls to project X for S return A, and project Y return B.
+	// In other words: pushing an object with a collision in sha1 should not make us get an object
+	//  from another repo.
+	// The objects used for this are the SHAttered.io files
+	rawcts, err := ioutil.ReadFile("../../functional_tests/blobs/shattered-1.pdf.b64")
+	cts := make([]byte, base64.StdEncoding.DecodedLen(len(rawcts)))
+	if err != nil {
+		t.Fatalf("Error reading shattered file: %s", err)
+	}
+	var ctslen int
+	ctslen, err = base64.StdEncoding.Decode(cts, rawcts)
+	if err != nil {
+		t.Fatalf("Error base64 decoding shattered file: %s", err)
+	}
+	p1 = instance.GetProjectStorage("test/project1")
+	p1w = p1.GetPusher("")
+	staged, err = p1w.StageObject(ObjectTypeBlob, 4)
+	if err != nil {
+		t.Fatal(fmt.Sprintf("StageObject returned error: %s", err))
+	}
+	n, err = staged.Write(cts[:ctslen])
+	if err != nil {
+		t.Fatal(fmt.Sprintf("Staged write returned error: %s", err))
+	}
+	if n != ctslen {
+		t.Fatal(fmt.Sprintf("Staged writed did not write expected number of bytes: %d != %d", n, ctslen))
+	}
+	_, err = staged.Finalize("a032bd813e568d3c0458b6fa06cfb9c64b0db851")
+	if err != nil {
+		t.Fatal(fmt.Sprintf("Unexpected error from finalizing: %s", err))
+	}
+	err = staged.Close()
+	if err != nil {
+		t.Fatal(fmt.Sprintf("Unexpected error on close: %s", err))
+	}
+	doneC = p1w.GetPushResultChannel()
+	select {
+	case err := <-doneC:
+		t.Fatal(fmt.Sprintf("Unexpected error on close channel: %s", err))
+	default:
+		// No message is good here
+		break
+	}
+	p1w.Done()
+	select {
+	case err, isopen := <-doneC:
+		if err != nil {
+			t.Fatal(fmt.Sprintf("Unexpected error when we expected close: %s", err))
+		}
+		if !isopen {
+			// Channel closed correctly
+			break
+		}
+	default:
+		t.Fatal("Done channel not closed")
+	}
+
+	rawcts, err = ioutil.ReadFile("../../functional_tests/blobs/shattered-2.pdf.b64")
+	cts = make([]byte, base64.StdEncoding.DecodedLen(len(rawcts)))
+	if err != nil {
+		t.Fatalf("Error reading shattered file: %s", err)
+	}
+	ctslen, err = base64.StdEncoding.Decode(cts, rawcts)
+	if err != nil {
+		t.Fatalf("Error base64 decoding shattered file: %s", err)
+	}
+	p2 = instance.GetProjectStorage("test/project2")
+	p2w = p2.GetPusher("")
+	staged, err = p2w.StageObject(ObjectTypeBlob, 4)
+	if err != nil {
+		t.Fatal(fmt.Sprintf("StageObject returned error: %s", err))
+	}
+	n, err = staged.Write(cts[:ctslen])
+	if err != nil {
+		t.Fatal(fmt.Sprintf("Staged write returned error: %s", err))
+	}
+	if n != ctslen {
+		t.Fatal(fmt.Sprintf("Staged writed did not write expected number of bytes: %d", n))
+	}
+	_, err = staged.Finalize("bfd8a85e581d714a30c0f11cd65dbef1db9a5874")
+	if err != nil {
+		t.Fatal(fmt.Sprintf("Unexpected error from finalizing: %s", err))
+	}
+	err = staged.Close()
+	if err != nil {
+		t.Fatal(fmt.Sprintf("Unexpected error on close: %s", err))
+	}
+	doneC = p2w.GetPushResultChannel()
+	select {
+	case err := <-doneC:
+		t.Fatal(fmt.Sprintf("Unexpected error on close channel: %s", err))
+	default:
+		// No message is good here
+		break
+	}
+	p2w.Done()
+	select {
+	case err, isopen := <-doneC:
+		if err != nil {
+			t.Fatal(fmt.Sprintf("Unexpected error when we expected close: %s", err))
+		}
+		if !isopen {
+			// Channel closed correctly
+			break
+		}
+	default:
+		t.Fatal("Done channel not closed")
+	}
+
+	// Verify
 }
 
 func TestGzipCompressedTreeStorageDriver(t *testing.T) {
