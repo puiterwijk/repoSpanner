@@ -31,6 +31,12 @@ checks:
   paranoid: false
 hooks:
   debug: false
+  dynamic:
+    allowed: true
+    schemes_allowed:
+    - https
+    hosts_allowed:
+    - mywebsite.example
   bubblewrap:
     enabled: true
     unshare:

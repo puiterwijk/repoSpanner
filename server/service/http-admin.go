@@ -2,13 +2,17 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/pkg/errors"
+	"github.com/spf13/viper"
 	"repospanner.org/repospanner/server/constants"
 	"repospanner.org/repospanner/server/datastructures"
 	"repospanner.org/repospanner/server/storage"
@@ -109,6 +113,38 @@ func (cfg *Service) serveAdminCreateRepo(w http.ResponseWriter, r *http.Request)
 	return
 }
 
+func (cfg *Service) allowDynamicHookURL(dynhookurl string) (dynurl *url.URL, err error) {
+	if !viper.GetBool("hooks.dynamic.allowed") {
+		return nil, errors.New("Dynamic Hook URLs are not allowed")
+	}
+	dynurl, err = url.Parse(dynhookurl)
+	if err != nil {
+		return nil, errors.Wrap(err, "Error parsing dynamic hook URL: ")
+	}
+	if !dynurl.IsAbs() {
+		return dynurl, errors.New("Dynamic Hook URL is not absolute")
+	}
+	schemeAllowed := false
+	for _, scheme := range viper.GetStringSlice("hooks.dynamic.schemes_allowed") {
+		if scheme == dynurl.Scheme {
+			schemeAllowed = true
+		}
+	}
+	if !schemeAllowed {
+		return nil, fmt.Errorf("Scheme %s is not allowed for dynamic hook urls", dynurl.Scheme)
+	}
+	hostAllowed := false
+	for _, host := range viper.GetStringSlice("hooks.dynamic.hosts_allowed") {
+		if host == "*" || dynurl.Host == host {
+			hostAllowed = true
+		}
+	}
+	if !hostAllowed {
+		return nil, fmt.Errorf("Host %s is not allowed for dynamic hook urls", dynurl.Host)
+	}
+	return dynurl, nil
+}
+
 func (cfg *Service) serveAdminEditRepo(w http.ResponseWriter, r *http.Request) {
 	var editreporequest datastructures.RepoUpdateRequest
 	if cont := cfg.parseJSONRequest(w, r, &editreporequest); !cont {
@@ -130,6 +166,17 @@ func (cfg *Service) serveAdminEditRepo(w http.ResponseWriter, r *http.Request) {
 			cfg.respondJSONResponse(w, datastructures.CommandResponse{
 				Success: false,
 				Error:   string(req) + " has invalid hook ID",
+			})
+			return
+		}
+	}
+	dynurl, has := editreporequest.UpdateRequest[datastructures.RepoUpdateHookDynamicURL]
+	if has {
+		_, err := cfg.allowDynamicHookURL(dynurl)
+		if err != nil {
+			cfg.respondJSONResponse(w, datastructures.CommandResponse{
+				Success: false,
+				Error:   fmt.Sprintf("Hook dynamic URL rejected: %s", err),
 			})
 			return
 		}

@@ -19,7 +19,7 @@ var adminEditRepoCmd = &cobra.Command{
 	Args:  cobra.MinimumNArgs(1),
 }
 
-func addHook(cmd *cobra.Command, req *datastructures.RepoUpdateRequest, reponame, flagname string) {
+func addHook(cmd *cobra.Command, req *datastructures.RepoUpdateRequest, reponame, flagname string) (setHook bool) {
 	hookname := flagname[len("hook-"):]
 	var field datastructures.RepoUpdateField
 	switch hookname {
@@ -64,7 +64,9 @@ func addHook(cmd *cobra.Command, req *datastructures.RepoUpdateRequest, reponame
 		}
 		fmt.Println("Hook uploaded successfully")
 		req.UpdateRequest[field] = resp.Info
+		setHook = true
 	}
+	return
 }
 
 func runAdminEditRepo(cmd *cobra.Command, args []string) {
@@ -75,6 +77,9 @@ func runAdminEditRepo(cmd *cobra.Command, args []string) {
 		UpdateRequest: make(map[datastructures.RepoUpdateField]string),
 	}
 
+	var setHook bool
+	var setDynamicHookURL bool
+
 	cmd.Flags().Visit(func(f *pflag.Flag) {
 		if f.Name == "public" {
 			ispublic, _ := cmd.Flags().GetBool("public")
@@ -84,9 +89,21 @@ func runAdminEditRepo(cmd *cobra.Command, args []string) {
 				request.UpdateRequest[datastructures.RepoUpdatePublic] = "false"
 			}
 		} else if strings.HasPrefix(f.Name, "hook-") {
-			addHook(cmd, &request, reponame, f.Name)
+			setThisHook := addHook(cmd, &request, reponame, f.Name)
+			setHook = setHook || setThisHook
+		} else if f.Name == "dynamic-hook-url" {
+			dynurl, _ := cmd.Flags().GetString("dynamic-hook-url")
+			if dynurl != "" {
+				setDynamicHookURL = true
+			}
+			request.UpdateRequest[datastructures.RepoUpdateHookDynamicURL] = dynurl
 		}
 	})
+
+	if setHook && setDynamicHookURL {
+		fmt.Println("Cannot set both hooks and dynamic hook URL")
+		return
+	}
 
 	if len(args) > 1 {
 		// Parse symref updates
@@ -142,4 +159,6 @@ func init() {
 		"Set an update hook")
 	adminEditRepoCmd.Flags().String("hook-post-receive", "",
 		"Set a post-receive hook")
+	adminEditRepoCmd.Flags().String("dynamic-hook-url", "",
+		"Set a dynamic hook URL")
 }

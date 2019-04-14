@@ -469,10 +469,18 @@ func (store *stateStore) applyUpdateRequest(reponame string, request datastructu
 			repo.Public = valB
 		case datastructures.RepoUpdateHookPreReceive:
 			repo.Hooks.PreReceive = val
+			repo.Hooks.DynamicHookURL = ""
 		case datastructures.RepoUpdateHookUpdate:
 			repo.Hooks.Update = val
+			repo.Hooks.DynamicHookURL = ""
 		case datastructures.RepoUpdateHookPostReceive:
 			repo.Hooks.PostReceive = val
+			repo.Hooks.DynamicHookURL = ""
+		case datastructures.RepoUpdateHookDynamicURL:
+			repo.Hooks.DynamicHookURL = val
+			repo.Hooks.PreReceive = string(storage.ZeroID)
+			repo.Hooks.Update = string(storage.ZeroID)
+			repo.Hooks.PostReceive = string(storage.ZeroID)
 		case datastructures.RepoUpdateSymref:
 			store.applySymrefUpdate(repo, val)
 		}

@@ -16,9 +16,10 @@ type CommandResponse struct {
 }
 
 type RepoHookInfo struct {
-	PreReceive  string
-	Update      string
-	PostReceive string
+	DynamicHookURL string
+	PreReceive     string
+	Update         string
+	PostReceive    string
 }
 
 type RepoInfo struct {
@@ -33,6 +34,7 @@ type RepoUpdateField string
 
 const (
 	RepoUpdatePublic          RepoUpdateField = "public"
+	RepoUpdateHookDynamicURL  RepoUpdateField = "hook-dynamic-url"
 	RepoUpdateHookPreReceive  RepoUpdateField = "hook-prereceive"
 	RepoUpdateHookUpdate      RepoUpdateField = "hook-update"
 	RepoUpdateHookPostReceive RepoUpdateField = "hook-postreceive"
