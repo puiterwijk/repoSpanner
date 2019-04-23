@@ -5,14 +5,29 @@ import (
 	"net/rpc"
 	"os"
 
-	"github.com/pkg/errors"
+	"repospanner.org/repospanner/server/constants"
 	"repospanner.org/repospanner/server/datastructures"
+
+	"github.com/pkg/errors"
 )
 
 type HookServer struct {
 	request *datastructures.HookRunRequest
 
+	apiversion int
+
 	workdir string
+}
+
+func (s *HookServer) NegotiateAPIVersion(apiVersion, noop_reply *int) (err error) {
+	if *apiVersion < constants.HookAPIVersionMin {
+		return fmt.Errorf("API Version %d less than minimum %d", *apiVersion, constants.HookAPIVersionMin)
+	}
+	if *apiVersion > constants.HookAPIVersion {
+		return fmt.Errorf("API Version %d newer than latest %d", *apiVersion, constants.HookAPIVersion)
+	}
+	s.apiversion = *apiVersion
+	return nil
 }
 
 func (s *HookServer) Prepare(noop_request, noop_reply *int) (err error) {

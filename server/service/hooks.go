@@ -114,7 +114,7 @@ func (cfg *Service) prepareHookRunning(ctx context.Context, errout, infoout io.W
 	if hooks.PreReceive == "" || hooks.Update == "" || hooks.PostReceive == "" {
 		return nil, fmt.Errorf("Hook not configured??")
 	}
-	if storage.ObjectID(hooks.PreReceive) == storage.ZeroID && storage.ObjectID(hooks.Update) == storage.ZeroID && storage.ObjectID(hooks.PostReceive) == storage.ZeroID {
+	if storage.ObjectID(hooks.PreReceive) == storage.ZeroID && storage.ObjectID(hooks.Update) == storage.ZeroID && storage.ObjectID(hooks.PostReceive) == storage.ZeroID && hooks.DynamicHookURL != "" {
 		return nullHookRunning{}, nil
 	}
 
@@ -143,7 +143,6 @@ func (cfg *Service) prepareHookRunning(ctx context.Context, errout, infoout io.W
 		BwrapConfig:  viper.GetStringMap("hooks.bubblewrap"),
 		User:         viper.GetInt("hooks.user"),
 		ProjectName:  projectname,
-		HookObjects:  make(map[string]string),
 		Requests:     make(map[string][2]string),
 		ClientCaCert: string(clientcacert),
 		ClientCert:   string(clientcert),
@@ -155,10 +154,10 @@ func (cfg *Service) prepareHookRunning(ctx context.Context, errout, infoout io.W
 		hookreq.Requests[req.GetRef()] = reqt
 	}
 
-	// Add hook objects
-	hookreq.HookObjects[string(hookTypePreReceive)] = hooks.PreReceive
-	hookreq.HookObjects[string(hookTypeUpdate)] = hooks.Update
-	hookreq.HookObjects[string(hookTypePostReceive)] = hooks.PostReceive
+	// Add hook URL if set. If it isn't, the hookrunner will build an RPC url to us and use that
+	if hooks.DynamicHookURL != "" {
+		hookreq.HookURL = hooks.DynamicHookURL
+	}
 
 	// Marshal the request
 	req, err := json.Marshal(hookreq)

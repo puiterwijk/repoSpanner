@@ -37,16 +37,6 @@ func prepareRequest() (*datastructures.HookRunRequest, error) {
 }
 
 func getRequest() (hrr datastructures.HookRunRequest, err error) {
-	if !constants.VersionBuiltIn() {
-		fmt.Fprintf(os.Stderr, "Invalid build")
-		err = errors.New("Invalid build")
-		return
-	}
-	if len(os.Args) == 2 && os.Args[1] == "--version" {
-		fmt.Println("repoSpanner Hook Runner " + constants.PublicVersionString())
-		os.Exit(0)
-	}
-
 	breq, err := ioutil.ReadAll(os.Stdin)
 	if err != nil {
 		return
